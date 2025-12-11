@@ -14,6 +14,8 @@ import java.awt.datatransfer.UnsupportedFlavorException;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -41,6 +43,8 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         initComponents();
     }
 
+    // ===================== UI SETUP =====================
+
     private void initComponents() {
         setLayout(new BorderLayout(10, 10));
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
@@ -61,11 +65,10 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         topPanel.add(promptPanel, BorderLayout.CENTER);
 
         //
-        // Center: images + response (split pane)
+        // Center: images panel
         //
         JPanel centerPanel = new JPanel(new BorderLayout(5, 5));
 
-        // Images area
         JPanel imagesPanel = new JPanel(new BorderLayout(5, 5));
         imagesPanel.add(new JLabel("Pasted images (max " + MAX_IMAGES + "):"), BorderLayout.NORTH);
 
@@ -75,7 +78,6 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         imagesScroll.setPreferredSize(new Dimension(400, 220));
         imagesPanel.add(imagesScroll, BorderLayout.CENTER);
 
-        // Buttons + counter under images
         JPanel imagesButtonsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
         pasteImageButton = new JButton("Paste image from clipboard");
@@ -94,7 +96,9 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
 
         centerPanel.add(imagesPanel, BorderLayout.CENTER);
 
+        //
         // Response area
+        //
         JPanel responsePanel = new JPanel(new BorderLayout(5, 5));
         responsePanel.add(new JLabel("Response:"), BorderLayout.NORTH);
         responseTextArea = new JTextArea(8, 60);
@@ -112,7 +116,7 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         // Bottom: send button
         //
         JPanel bottomPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        sendButton = new JButton("Send to GPT");
+        sendButton = new JButton("Send to Gemini");
         sendButton.setEnabled(false);
         bottomPanel.add(sendButton);
 
@@ -131,7 +135,7 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         clearImagesButton.addActionListener(e -> clearAllImages());
         sendButton.addActionListener(e -> sendToGPT());
 
-        // Ctrl+V as a shortcut to paste image
+        // Ctrl+V shortcut to paste
         getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
                 KeyStroke.getKeyStroke("control V"), "pasteImage");
         getActionMap().put("pasteImage", new AbstractAction() {
@@ -144,7 +148,7 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         updateSendButtonState();
     }
 
-    // === Image handling =====================================================
+    // ===================== IMAGE HANDLING =====================
 
     private void pasteImageFromClipboard() {
         if (images.size() >= MAX_IMAGES) {
@@ -242,7 +246,7 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         }
     }
 
-    // Panel to show a single image thumbnail
+    // Thumbnail panel
     private static class ImageThumbnailPanel extends JPanel {
         private final BufferedImage image;
 
@@ -257,18 +261,15 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
-            if (image == null) {
-                return;
-            }
+            if (image == null) return;
+
             int w = getWidth();
             int h = getHeight();
             int imgW = image.getWidth();
             int imgH = image.getHeight();
 
             double scale = Math.min((w - 10) / (double) imgW, (h - 10) / (double) imgH);
-            if (scale <= 0) {
-                scale = 1.0;
-            }
+            if (scale <= 0) scale = 1.0;
 
             int drawW = (int) (imgW * scale);
             int drawH = (int) (imgH * scale);
@@ -279,7 +280,7 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         }
     }
 
-    // === GPT call ===========================================================
+    // ===================== GEMINI CALL =====================
 
     private void sendToGPT() {
         if (images.isEmpty()) {
@@ -309,35 +310,45 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
                     base64Images.add(encodeImageToBase64(img));
                 }
 
-                // Build content array: text + multiple images
-                StringBuilder contentBuilder = new StringBuilder();
-                contentBuilder.append("{\"type\": \"text\", \"text\": ");
-                contentBuilder.append(escapeJson(prompt));
-                contentBuilder.append("}");
+                // Build Gemini "parts" array: optional text + multiple images
+                StringBuilder partsBuilder = new StringBuilder();
+                boolean first = true;
 
-                for (String base64 : base64Images) {
-                    contentBuilder.append(",\n      ");
-                    contentBuilder.append("{\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/png;base64,");
-                    contentBuilder.append(base64);
-                    contentBuilder.append("\"}}");
+                if (prompt != null && !prompt.trim().isEmpty()) {
+                    partsBuilder.append("{\"text\": ");
+                    partsBuilder.append(escapeJson(prompt));
+                    partsBuilder.append("}");
+                    first = false;
                 }
 
-                // JSON payload for Chat Completions with vision
+                for (String base64 : base64Images) {
+                    if (!first) {
+                        partsBuilder.append(",\n          ");
+                    }
+                    partsBuilder.append("{\"inlineData\": {\"mimeType\": \"image/png\", \"data\": \"");
+                    partsBuilder.append(base64);
+                    partsBuilder.append("\"}}");
+                    first = false;
+                }
+
                 String jsonPayload = "{\n" +
-                        "  \"model\": \"gpt-4.1-mini\",\n" +  // change model if you prefer
-                        "  \"messages\": [\n" +
-                        "    {\"role\": \"user\", \"content\": [\n" +
-                        "      " + contentBuilder.toString() + "\n" +
-                        "    ]}\n" +
-                        "  ],\n" +
-                        "  \"max_tokens\": 2048\n" +
+                        "  \"contents\": [\n" +
+                        "    {\n" +
+                        "      \"parts\": [\n" +
+                        "          " + partsBuilder.toString() + "\n" +
+                        "      ]\n" +
+                        "    }\n" +
+                        "  ]\n" +
                         "}";
 
-                String endpoint = "https://api.openai.com/v1/chat/completions";
+                String endpoint = "https://generativelanguage.googleapis.com/v1/models/"
+                        + "gemini-3.0-pro:generateContent?key="
+                        + URLEncoder.encode(apiKey, StandardCharsets.UTF_8.toString());
+
                 String response = postJson(endpoint, jsonPayload, apiKey);
 
                 SwingUtilities.invokeLater(() -> {
-                    String formatted = extractRelevantContent(response);
+                    String formatted = extractGeminiText(response);
                     responseTextArea.setText(formatted);
                     sendButton.setEnabled(true);
                 });
@@ -358,9 +369,7 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         return Base64.getEncoder().encodeToString(bytes);
     }
 
-    // === JSON helpers & HTTP ===============================================
-
-    // Escape text as a JSON string (returns something already wrapped in quotes)
+    // Escape Java string as JSON string (returns value with quotes)
     private String escapeJson(String text) {
         if (text == null) return "\"\"";
         return "\"" + text
@@ -370,15 +379,18 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
                 .replace("\r", "\\r") + "\"";
     }
 
-    // Very simple extractor for choices[0].message.content
-    private String extractRelevantContent(String response) {
+    // Extract candidates[0].content.parts[0].text from Gemini response
+    private String extractGeminiText(String response) {
         try {
-            int choicesIdx = response.indexOf("\"choices\"");
-            if (choicesIdx == -1) return response;
-            int contentIdx = response.indexOf("\"content\"", choicesIdx);
-            if (contentIdx == -1) return response;
-            int colonIdx = response.indexOf(":", contentIdx);
+            int candidatesIdx = response.indexOf("\"candidates\"");
+            if (candidatesIdx == -1) return response;
+
+            int textIdx = response.indexOf("\"text\"", candidatesIdx);
+            if (textIdx == -1) return response;
+
+            int colonIdx = response.indexOf(":", textIdx);
             if (colonIdx == -1) return response;
+
             int startQuote = response.indexOf("\"", colonIdx + 1);
             if (startQuote == -1) return response;
 
@@ -388,21 +400,11 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
                 if (c == '"') break;
                 if (c == '\\' && i + 1 < response.length()) {
                     char next = response.charAt(i + 1);
-                    if (next == 'n') {
-                        sb.append('\n');
-                        i++;
-                    } else if (next == 't') {
-                        sb.append('\t');
-                        i++;
-                    } else if (next == '"') {
-                        sb.append('"');
-                        i++;
-                    } else if (next == '\\') {
-                        sb.append('\\');
-                        i++;
-                    } else {
-                        sb.append(c);
-                    }
+                    if (next == 'n') { sb.append('\n'); i++; }
+                    else if (next == 't') { sb.append('\t'); i++; }
+                    else if (next == '"') { sb.append('"'); i++; }
+                    else if (next == '\\') { sb.append('\\'); i++; }
+                    else { sb.append(next); i++; }
                 } else {
                     sb.append(c);
                 }
@@ -418,7 +420,7 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         URL url = new URL(endpoint);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
-        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+        // No Authorization header for Gemini; key is in the URL
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setDoOutput(true);
 
@@ -438,16 +440,16 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
         return response.toString();
     }
 
-    // === IPluginExtraTabView ===============================================
+    // ===================== IPluginExtraTabView =====================
 
     @Override
     public String getTitle() {
-        return "Images To GPT";
+        return "Images to Gemini";
     }
 
     @Override
     public String getDescription() {
-        return "Enter a prompt and paste up to five screenshots to send them to GPT with an API key.";
+        return "Paste up to five screenshots with a prompt and send them to Gemini.";
     }
 
     @Override
@@ -457,44 +459,68 @@ public class ImagesToGPT extends JPanel implements IPluginExtraTabView {
 
     @Override
     public void activated() {
-        // Nothing to do on activation in this version
+        // Nothing special
     }
 
     @Override
     public void deactivated() {
-        // Nothing special on deactivation
+        // Nothing special
     }
 
     @Override
     public void addSelectionListener(com.change_vision.jude.api.inf.ui.ISelectionListener listener) {
-        // Not used in this tab
+        // Not used
     }
 
-    // === API key loading ====================================================
+    // ===================== API KEY LOADING =====================
 
     private void loadApiKey() {
-        try (InputStream in = getClass().getResourceAsStream("/config.properties")) {
+        InputStream in = null;
+        try {
+            // Try context class loader
+            ClassLoader cl = Thread.currentThread().getContextClassLoader();
+            if (cl != null) {
+                in = cl.getResourceAsStream("config.properties");
+            }
+
+            // Try this class's classloader
+            if (in == null) {
+                in = ImagesToGPT.class.getClassLoader().getResourceAsStream("config.properties");
+            }
+
+            // Try absolute resource
+            if (in == null) {
+                in = ImagesToGPT.class.getResourceAsStream("/config.properties");
+            }
+
             if (in == null) {
                 JOptionPane.showMessageDialog(this,
-                        "Could not find config.properties for API key.",
-                        "Error",
+                        "Could not find config.properties on the classpath.\n" +
+                        "Make sure it is in the resources folder and included in the plugin JAR.",
+                        "API key error",
                         JOptionPane.ERROR_MESSAGE);
                 return;
             }
+
             java.util.Properties props = new java.util.Properties();
             props.load(in);
-            apiKey = props.getProperty("openai.api.key");
+            apiKey = props.getProperty("gemini.api.key");
+
             if (apiKey == null || apiKey.isEmpty()) {
                 JOptionPane.showMessageDialog(this,
-                        "API key not found in config.properties.",
-                        "Error",
+                        "Property 'gemini.api.key' not found or empty in config.properties.",
+                        "API key error",
                         JOptionPane.ERROR_MESSAGE);
             }
         } catch (IOException e) {
             JOptionPane.showMessageDialog(this,
                     "Could not load API key: " + e.getMessage(),
-                    "Error",
+                    "API key error",
                     JOptionPane.ERROR_MESSAGE);
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (IOException ignored) {}
+            }
         }
     }
 }
